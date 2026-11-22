@@ -1,0 +1,91 @@
+# ARC CI — generated from the stratus arc-ci workflow template
+# (build-python.yml there; see the arc-ci README for design and onboarding).
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: inference-e2e
+    container: ghcr.io/astral-sh/uv:python3.11-bookworm
+    steps:
+      - name: clone
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ github.repository }}.git" .
+          if [ -n "${{ github.event.pull_request.number }}" ]; then
+            git fetch --depth 1 origin "pull/${{ github.event.pull_request.number }}/head"
+          else
+            git fetch --depth 1 origin "${{ github.sha }}"
+          fi
+          git checkout --detach FETCH_HEAD
+      - name: lint
+        run: |
+          set -eu
+          # Prefer the repo's own pinned ruff (uv.lock) so formatting
+          # verdicts match the repo's CI; fall back to latest for repos
+          # that don't pin ruff.
+          if [ -f uv.lock ] && grep -q 'name = "ruff"' uv.lock; then
+            uv sync --quiet
+            uv run ruff check .
+            uv run ruff format --check .
+          else
+            uvx ruff check .
+            uvx ruff format --check .
+          fi
+      - name: test
+        run: |
+          set -eu
+          if [ -f pyproject.toml ] && grep -q '\[tool.pytest' pyproject.toml; then
+            uv sync
+            # Unit tests only: conformance/e2e suites need a live
+            # cluster and run as dedicated CI jobs, not in build CI.
+            uv run pytest --ignore=tests/test_conformance.py
+          elif [ -f Makefile ] && grep -q '^test:' Makefile; then
+            make test
+          else
+            echo "no test target found; skipping"
+          fi
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: inference-e2e-build
+    container: quay.io/buildah/stable:v1.38.0
+    environment: quay-push
+    steps:
+      - name: fetch source
+        # quay.io/buildah/stable ships curl and tar but no git (its
+        # install set is just buildah/fuse-overlayfs/ucpp) — pull the
+        # source tarball instead. Publish only runs on pushes to main,
+        # so github.sha is the ref; the tarball extracts to
+        # <repo>-<sha>/, hence --strip-components=1. Bridge until the
+        # purpose-built ci-driver image (buildah + git) exists.
+        run: |
+          set -eu
+          curl -sL "https://github.com/${{ github.repository }}/archive/${{ github.sha }}.tar.gz" \
+            | tar xz --strip-components=1
+      - name: build-and-push
+        env:
+          _CONTAINERS_ROOTLESS_UID: "1"
+          BUILDAH_ISOLATION: chroot
+          REGISTRY_AUTH_FILE: /tmp/auth.json
+        run: |
+          set -euo pipefail
+          if [ ! -f Dockerfile ]; then
+            echo "no Dockerfile; skipping publish"
+            exit 0
+          fi
+          echo "${{ secrets.QUAY_PASSWORD }}" | buildah login --authfile "$REGISTRY_AUTH_FILE" \
+            --username "${{ secrets.QUAY_USERNAME }}" --password-stdin quay.io
+          IMG="quay.io/klape/inference-e2e:${{ github.sha }}"
+          buildah --storage-driver=vfs bud --platform=linux/amd64 -f Dockerfile -t "$IMG" .
+          buildah --storage-driver=vfs push "$IMG"
+          buildah --storage-driver=vfs tag "$IMG" "quay.io/klape/inference-e2e:latest"
+          buildah --storage-driver=vfs push "quay.io/klape/inference-e2e:latest"
