@@ -29,16 +29,20 @@ jobs:
       - name: lint
         run: |
           set -eu
-          # Prefer the repo's own pinned ruff (uv.lock) so formatting
-          # verdicts match the repo's CI; fall back to latest for repos
-          # that don't pin ruff.
+          # Match the repo's own CI contract (old ci.yaml, Makefile):
+          # ruff from the dev extra, scoped to src/ and tests/ — not the
+          # whole repo. Prefer the repo's own pinned ruff (uv.lock) so
+          # formatting verdicts match the repo's CI; fall back to latest
+          # for repos that don't pin ruff.
           if [ -f uv.lock ] && grep -q 'name = "ruff"' uv.lock; then
-            uv sync --quiet
-            uv run ruff check .
-            uv run ruff format --check .
+            # --all-extras: ruff lives in the project's dev extra, and a
+            # bare `uv sync` installs no extras at all.
+            uv sync --quiet --all-extras
+            uv run ruff check src/ tests/
+            uv run ruff format --check src/ tests/
           else
-            uvx ruff check .
-            uvx ruff format --check .
+            uvx ruff check src/ tests/
+            uvx ruff format --check src/ tests/
           fi
       - name: test
         run: |
