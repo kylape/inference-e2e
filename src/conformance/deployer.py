@@ -492,11 +492,23 @@ class Deployer:
         return stale
 
     def check_crd_exists(self, crd_name: str) -> bool:
+        """Best-effort check that a resource type is served, via a
+        namespaced list of it — the exact verb environment credentials
+        already hold. No CRD-read or discovery rights needed.
+
+        Resolution failures that mean absence ("the server doesn't have
+        a resource type") return False; RBAC failures mean we cannot
+        tell, and return True so the deploy step — the real authority —
+        decides with its own clear error if the type is truly missing.
+        """
+        plural, _, _ = crd_name.partition(".")
         try:
-            self.kubectl("get", "crd", crd_name)
+            self.kubectl("get", plural, "-n", self.namespace)
             return True
-        except RuntimeError:
-            return False
+        except RuntimeError as exc:
+            if "doesn't have a resource type" in str(exc):
+                return False
+            return True
 
     def check_resource_exists(self, kind: str, name: str) -> bool:
         try:
@@ -860,20 +872,21 @@ class Deployer:
 
     def wait_for_gateway(self, timeout: float = 300) -> str:
         deadline = time.time() + timeout
+        # Environment credentials are namespaced: cluster-wide (-A) gateway
+        # lists are denied. The gateway namespaces match the LWE operator's
+        # DefaultGatewayNamespaces (where RHOAI attaches inference
+        # gateways); -A stays first for credentials that can use it.
+        candidates = [None, "openshift-ingress", "redhat-ods-applications"]
         while time.time() < deadline:
-            try:
-                output = self.kubectl(
-                    "get",
-                    "gateway",
-                    "-A",
-                    "-o",
-                    "jsonpath={.items[0].status.addresses[0].value}",
-                    check=False,
-                )
+            for namespace in candidates:
+                args = ["get", "gateway", "-o", "jsonpath={.items[0].status.addresses[0].value}"]
+                if namespace is None:
+                    args.insert(2, "-A")
+                else:
+                    args[2:2] = ["-n", namespace]
+                output = self.kubectl(*args, check=False)
                 if output:
                     return output
-            except RuntimeError:
-                pass
             time.sleep(10)
         raise TimeoutError(f"Gateway not programmed after {timeout}s")
 
