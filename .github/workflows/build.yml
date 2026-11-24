@@ -14,7 +14,10 @@ concurrency:
 jobs:
   check:
     runs-on: inference-e2e
-    container: ghcr.io/astral-sh/uv:python3.11-bookworm
+    # The ci-driver container (not the bare uv image): the batch gateway
+    # tests shell out to kubectl, which the driver image ships alongside
+    # uv — one container for check and e2e alike.
+    container: quay.io/klape/llm-d-ci-driver:latest
     steps:
       - name: clone
         run: |

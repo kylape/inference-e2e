@@ -1,0 +1,165 @@
+# E2E pipelines for inference-e2e: provision a real LLMWorkloadEnvironment
+# per mode, run the conformance suite in it, tear it down. Jobs run in the
+# ci-driver image (lwe + kubectl + uv) on the unprivileged check scale
+# set; the cluster credential comes from the E2E_KUBECONFIG secret (the
+# arc-e2e SA — LWE CRUD in klape-dev, nothing else).
+#
+# Mode tiers follow the design's authority boundary: namespace mode runs
+# on every same-repo PR; vcluster and hypershift run only when a
+# maintainer applies their label (the label event itself triggers this
+# workflow). Fork PRs get no e2e at all — GitHub withholds the secret.
+name: e2e
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+concurrency:
+  group: e2e-${{ github.event.pull_request.number }}
+  # false: never cancel an in-flight environment mid-test
+  cancel-in-progress: false
+
+jobs:
+  e2e-namespace:
+    # Bare metal: the host's RHOAI and a100s. Real GPU work — the batch
+    # testcase is simulator-based by design, so single-gpu-smoke runs
+    # without --mock for a real-model GPU pass.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: inference-e2e
+    container: quay.io/klape/llm-d-ci-driver:latest
+    timeout-minutes: 90
+    env:
+      LWE_NAME: e2e-${{ github.event.pull_request.number }}-ns
+      LWE_MODE: Namespace
+      TESTCASES: batch-gateway-async-sql,single-gpu-smoke
+    steps:
+      - name: clone
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ github.repository }}.git" .
+          git fetch --depth 1 origin "pull/${{ github.event.pull_request.number }}/head"
+          git checkout --detach FETCH_HEAD
+      - name: environment up
+        env:
+          E2E_KUBECONFIG: ${{ secrets.E2E_KUBECONFIG }}
+        run: |
+          set -eu
+          printf '%s' "$E2E_KUBECONFIG" > /tmp/cluster.kc
+          export KUBECONFIG=/tmp/cluster.kc
+          lwe up -mode "$LWE_MODE" -name "$LWE_NAME" -duration 4h -timeout 20m
+          lwe kubeconfig -output /tmp/env.kc "$LWE_NAME"
+      - name: run suite
+        run: |
+          set -eu
+          uv sync --quiet --all-extras
+          uv run llm-d-e2e \
+            --manifest-repo https://github.com/kylape/inference-e2e-manifests.git \
+            --setup demo/batch-gateway \
+            --kubeconfig /tmp/env.kc \
+            --namespace "env-$LWE_NAME" \
+            --testcase "$TESTCASES" -x -v
+      - name: environment down
+        if: always()
+        env:
+          E2E_KUBECONFIG: ${{ secrets.E2E_KUBECONFIG }}
+        run: |
+          printf '%s' "$E2E_KUBECONFIG" > /tmp/cluster.kc
+          export KUBECONFIG=/tmp/cluster.kc
+          lwe down "$LWE_NAME" || true
+
+  e2e-vcluster:
+    # RHOAI inside a vcluster with GPU passthrough; real GPU work.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'e2e-vcluster')
+    runs-on: inference-e2e
+    container: quay.io/klape/llm-d-ci-driver:latest
+    timeout-minutes: 150
+    env:
+      LWE_NAME: e2e-${{ github.event.pull_request.number }}-vc
+      LWE_MODE: VCluster
+      TESTCASES: batch-gateway-async-sql,single-gpu-smoke
+    steps:
+      - name: clone
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ github.repository }}.git" .
+          git fetch --depth 1 origin "pull/${{ github.event.pull_request.number }}/head"
+          git checkout --detach FETCH_HEAD
+      - name: environment up
+        env:
+          E2E_KUBECONFIG: ${{ secrets.E2E_KUBECONFIG }}
+        run: |
+          set -eu
+          printf '%s' "$E2E_KUBECONFIG" > /tmp/cluster.kc
+          export KUBECONFIG=/tmp/cluster.kc
+          lwe up -mode "$LWE_MODE" -name "$LWE_NAME" -duration 4h -timeout 45m
+          lwe kubeconfig -output /tmp/env.kc "$LWE_NAME"
+      - name: run suite
+        run: |
+          set -eu
+          uv sync --quiet --all-extras
+          uv run llm-d-e2e \
+            --manifest-repo https://github.com/kylape/inference-e2e-manifests.git \
+            --setup demo/batch-gateway \
+            --kubeconfig /tmp/env.kc \
+            --namespace "env-$LWE_NAME" \
+            --testcase "$TESTCASES" -x -v
+      - name: environment down
+        if: always()
+        env:
+          E2E_KUBECONFIG: ${{ secrets.E2E_KUBECONFIG }}
+        run: |
+          printf '%s' "$E2E_KUBECONFIG" > /tmp/cluster.kc
+          export KUBECONFIG=/tmp/cluster.kc
+          lwe down "$LWE_NAME" || true
+
+  e2e-hypershift:
+    # RHOAI inside a HyperShift hosted cluster (KubeVirt workers, no
+    # GPU in this mode); the batch testcase is simulator-based, so it
+    # needs no GPU — mock work by construction.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'e2e-hypershift')
+    runs-on: inference-e2e
+    container: quay.io/klape/llm-d-ci-driver:latest
+    timeout-minutes: 150
+    env:
+      LWE_NAME: e2e-${{ github.event.pull_request.number }}-hs
+      LWE_MODE: HyperShift
+      TESTCASES: batch-gateway-async-sql
+    steps:
+      - name: clone
+        run: |
+          set -eu
+          git clone --depth 1 "https://github.com/${{ github.repository }}.git" .
+          git fetch --depth 1 origin "pull/${{ github.event.pull_request.number }}/head"
+          git checkout --detach FETCH_HEAD
+      - name: environment up
+        env:
+          E2E_KUBECONFIG: ${{ secrets.E2E_KUBECONFIG }}
+        run: |
+          set -eu
+          printf '%s' "$E2E_KUBECONFIG" > /tmp/cluster.kc
+          export KUBECONFIG=/tmp/cluster.kc
+          lwe up -mode "$LWE_MODE" -name "$LWE_NAME" -duration 4h -timeout 45m
+          lwe kubeconfig -output /tmp/env.kc "$LWE_NAME"
+      - name: run suite
+        run: |
+          set -eu
+          uv sync --quiet --all-extras
+          uv run llm-d-e2e \
+            --manifest-repo https://github.com/kylape/inference-e2e-manifests.git \
+            --setup demo/batch-gateway \
+            --kubeconfig /tmp/env.kc \
+            --namespace "env-$LWE_NAME" \
+            --testcase "$TESTCASES" -x -v
+      - name: environment down
+        if: always()
+        env:
+          E2E_KUBECONFIG: ${{ secrets.E2E_KUBECONFIG }}
+        run: |
+          printf '%s' "$E2E_KUBECONFIG" > /tmp/cluster.kc
+          export KUBECONFIG=/tmp/cluster.kc
+          lwe down "$LWE_NAME" || true
