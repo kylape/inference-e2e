@@ -397,14 +397,21 @@ class Deployer:
         return sorted(names)
 
     def ensure_metrics_rbac(self, name: str):
-        """Bind the EPP service account to kserve-metrics-reader-cluster-role for metrics scraping."""
+        """Bind the EPP service account to kserve-metrics-reader-cluster-role for metrics scraping.
+
+        A namespaced RoleBinding referencing the cluster role: environment
+        credentials are namespaced by design and cannot create
+        cluster-scoped bindings — and never need to, since the scrape
+        target lives in this namespace.
+        """
         sa_name = f"{name}-epp-sa"
         binding_name = f"{self.namespace}-{name}-metrics-reader"
         try:
-            self.kubectl("get", "clusterrolebinding", binding_name, check=False)
             existing = self.kubectl(
                 "get",
-                "clusterrolebinding",
+                "rolebinding",
+                "-n",
+                self.namespace,
                 binding_name,
                 "-o",
                 "jsonpath={.metadata.name}",
@@ -417,7 +424,9 @@ class Deployer:
         try:
             self.kubectl(
                 "create",
-                "clusterrolebinding",
+                "rolebinding",
+                "-n",
+                self.namespace,
                 binding_name,
                 "--clusterrole=kserve-metrics-reader-cluster-role",
                 f"--serviceaccount={self.namespace}:{sa_name}",
@@ -428,7 +437,7 @@ class Deployer:
 
     def cleanup_metrics_rbac(self, name: str):
         binding_name = f"{self.namespace}-{name}-metrics-reader"
-        self.kubectl("delete", "clusterrolebinding", binding_name, "--ignore-not-found", check=False)
+        self.kubectl("delete", "rolebinding", "-n", self.namespace, binding_name, "--ignore-not-found", check=False)
 
     @contextmanager
     def inference_token(self, service_names: list[str], cleanup: bool = True):
