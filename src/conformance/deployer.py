@@ -438,8 +438,13 @@ class Deployer:
     def cleanup_metrics_rbac(self, name: str):
         binding_name = f"{self.namespace}-{name}-metrics-reader"
         self.kubectl(
-            "delete", "rolebinding", binding_name, "-n", self.namespace,
-            "--ignore-not-found", check=False,
+            "delete",
+            "rolebinding",
+            binding_name,
+            "-n",
+            self.namespace,
+            "--ignore-not-found",
+            check=False,
         )
 
     @contextmanager
