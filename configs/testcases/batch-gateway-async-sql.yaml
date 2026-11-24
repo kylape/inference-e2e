@@ -45,7 +45,12 @@ validation:
   metricsCheck:
     enabled: true
     checkVLLM: true
-    checkScheduler: true
+    # The batch deployment (simulator + LLMBatchGateway + postgres +
+    # seaweedfs) has no EPP/router-scheduler pod on any label the
+    # scraper searches; scheduler metrics belong to gateway-routed
+    # services. The batch phases (40a-40k) are the validation surface
+    # for this case.
+    checkScheduler: false
   # Phases 40a-40k (upstream batch-gateway e2e ports). `model` and `prompts`
   # default to model.name / testPrompts
   # above; only the batch-specific knobs are set here.
