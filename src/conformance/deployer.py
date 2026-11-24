@@ -437,7 +437,10 @@ class Deployer:
 
     def cleanup_metrics_rbac(self, name: str):
         binding_name = f"{self.namespace}-{name}-metrics-reader"
-        self.kubectl("delete", "rolebinding", "-n", self.namespace, binding_name, "--ignore-not-found", check=False)
+        self.kubectl(
+            "delete", "rolebinding", binding_name, "-n", self.namespace,
+            "--ignore-not-found", check=False,
+        )
 
     @contextmanager
     def inference_token(self, service_names: list[str], cleanup: bool = True):

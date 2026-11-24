@@ -396,7 +396,7 @@ metadata:
     assert order[-1] == config
     # Every manifest-document delete is bounded, so one stuck finalizer cannot
     # hang phase 99 (the metrics RBAC cleanup is not manifest-derived).
-    manifest_deletes = [args for args in deletes if args[1] != "clusterrolebinding"]
+    manifest_deletes = [args for args in deletes if args[1] not in ("clusterrolebinding", "rolebinding")]
     assert all("--timeout" in args for args in manifest_deletes)
 
 
